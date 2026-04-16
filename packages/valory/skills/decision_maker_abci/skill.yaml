@@ -320,6 +320,7 @@ models:
       mech_invalid_response: Invalid Response
       mech_consecutive_failures_threshold: 2
       tool_quarantine_duration: 18000
+      ensemble_size: 1
       use_multi_bets_mode: true
       enable_multi_bets_fallback: false
       enable_position_review: false

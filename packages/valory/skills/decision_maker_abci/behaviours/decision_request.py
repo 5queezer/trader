@@ -45,6 +45,7 @@ class DecisionRequestBehaviour(DecisionMakerBaseBehaviour):
         """Initialize Behaviour."""
         super().__init__(**kwargs)
         self._metadata: Optional[MechMetadata] = None
+        self._metadata_list: List[MechMetadata] = []
 
     @property
     def metadata(self) -> Dict[str, str]:
@@ -66,13 +67,33 @@ class DecisionRequestBehaviour(DecisionMakerBaseBehaviour):
             question=sampled_bet.title, yes=sampled_bet.yes, no=sampled_bet.no
         )
         prompt = self.params.prompt_template.substitute(prompt_params)
-        tool = self.synchronized_data.mech_tool
-        nonce = str(uuid4())
+        primary_tool = self.synchronized_data.mech_tool
         request_context = sampled_bet.to_request_context()
-        self._metadata = MechMetadata(
-            prompt, tool, nonce, request_context=request_context
-        )
-        msg = f"Prepared metadata {self.metadata!r} for the request."
+
+        # Determine ensemble tools
+        ensemble_size = self.params.ensemble_size
+        if ensemble_size > 1 and self.synchronized_data.is_policy_set:
+            policy = self.synchronized_data.policy
+            top_tools = policy.select_n_tools(ensemble_size)
+            # Ensure the consensus-agreed primary tool is included
+            if primary_tool not in top_tools:
+                top_tools = [primary_tool] + top_tools[: ensemble_size - 1]
+        else:
+            top_tools = [primary_tool]
+
+        # Create metadata for each tool in the ensemble
+        self._metadata_list = []
+        for tool in top_tools:
+            nonce = str(uuid4())
+            metadata = MechMetadata(
+                prompt, tool, nonce, request_context=request_context
+            )
+            self._metadata_list.append(metadata)
+
+        # Keep backwards compatibility: _metadata points to the first (primary) entry
+        self._metadata = self._metadata_list[0] if self._metadata_list else None
+
+        msg = f"Prepared {len(self._metadata_list)} metadata entries for ensemble request (tools: {[t for t in top_tools]})."
         self.context.logger.info(msg)
 
     def initialize_bet_id_row_manager(self) -> Dict[str, List[int]]:
@@ -97,8 +118,8 @@ class DecisionRequestBehaviour(DecisionMakerBaseBehaviour):
             self.shared_state.mech_timed_out = False
             payload_content = None
             mocking_mode: Optional[bool] = self.benchmarking_mode.enabled
-            if self._metadata and self.n_slots_supported:
-                mech_requests = [self.metadata]
+            if self._metadata_list and self.n_slots_supported:
+                mech_requests = [asdict(m) for m in self._metadata_list]
                 payload_content = json.dumps(mech_requests, sort_keys=True)
             if not self.n_slots_supported:
                 mocking_mode = None

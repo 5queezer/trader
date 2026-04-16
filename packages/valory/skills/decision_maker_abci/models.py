@@ -469,6 +469,7 @@ class DecisionMakerParams(
         self.tool_quarantine_duration: int = self._ensure(
             "tool_quarantine_duration", kwargs, int
         )
+        self.ensemble_size: int = self._ensure("ensemble_size", kwargs, int)
         self.enable_position_review: bool = self._ensure(
             "enable_position_review", kwargs, bool
         )
