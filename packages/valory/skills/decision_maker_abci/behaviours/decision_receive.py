@@ -212,8 +212,17 @@ class DecisionReceiveBehaviour(StorageManagerBehaviour):
                         f"Skipping ensemble response with unexpected payload type: {type(pred).__name__}"
                     )
                     continue
-                valid_predictions.append(pred)
-            except (json.JSONDecodeError, ValueError) as exc:
+                normalized = {
+                    field: float(pred.get(field, default))
+                    for field, default in (
+                        (P_YES_FIELD, 0.5),
+                        (P_NO_FIELD, 0.5),
+                        (CONFIDENCE_FIELD, 0.5),
+                        (INFO_UTILITY_FIELD, 0.0),
+                    )
+                }
+                valid_predictions.append(normalized)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 self.context.logger.warning(
                     f"Could not parse ensemble response: {exc}"
                 )
@@ -223,7 +232,8 @@ class DecisionReceiveBehaviour(StorageManagerBehaviour):
             self._mech_response = mech_responses[0]
             return
 
-        weights = [max(float(p.get("confidence", 0.5)), 0.0) for p in valid_predictions]
+        # Predictions are already normalized to floats at parse time
+        weights = [max(p[CONFIDENCE_FIELD], 0.0) for p in valid_predictions]
         total_weight = sum(weights)
         if total_weight == 0:
             # Equal weighting fallback when all confidences are zero
@@ -231,20 +241,16 @@ class DecisionReceiveBehaviour(StorageManagerBehaviour):
             total_weight = float(len(valid_predictions))
 
         agg_p_yes = sum(
-            float(p.get("p_yes", 0.5)) * w
-            for p, w in zip(valid_predictions, weights)
+            p[P_YES_FIELD] * w for p, w in zip(valid_predictions, weights)
         ) / total_weight
         agg_p_no = sum(
-            float(p.get("p_no", 0.5)) * w
-            for p, w in zip(valid_predictions, weights)
+            p[P_NO_FIELD] * w for p, w in zip(valid_predictions, weights)
         ) / total_weight
         agg_confidence = sum(
-            float(p.get("confidence", 0.5)) * w
-            for p, w in zip(valid_predictions, weights)
+            p[CONFIDENCE_FIELD] * w for p, w in zip(valid_predictions, weights)
         ) / total_weight
         agg_info = sum(
-            float(p.get("info_utility", 0.0)) * w
-            for p, w in zip(valid_predictions, weights)
+            p[INFO_UTILITY_FIELD] * w for p, w in zip(valid_predictions, weights)
         ) / total_weight
 
         self.context.logger.info(
