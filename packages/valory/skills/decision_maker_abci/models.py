@@ -470,6 +470,10 @@ class DecisionMakerParams(
             "tool_quarantine_duration", kwargs, int
         )
         self.ensemble_size: int = self._ensure("ensemble_size", kwargs, int)
+        if self.ensemble_size < 1:
+            raise ValueError(
+                "The ensemble_size must be greater than or equal to 1."
+            )
         self.enable_position_review: bool = self._ensure(
             "enable_position_review", kwargs, bool
         )

@@ -207,6 +207,11 @@ class DecisionReceiveBehaviour(StorageManagerBehaviour):
                 continue
             try:
                 pred = json.loads(resp.result)
+                if not isinstance(pred, dict):
+                    self.context.logger.warning(
+                        f"Skipping ensemble response with unexpected payload type: {type(pred).__name__}"
+                    )
+                    continue
                 valid_predictions.append(pred)
             except (json.JSONDecodeError, ValueError) as exc:
                 self.context.logger.warning(
@@ -218,26 +223,29 @@ class DecisionReceiveBehaviour(StorageManagerBehaviour):
             self._mech_response = mech_responses[0]
             return
 
-        total_weight = sum(
-            float(p.get("confidence", 0.5)) for p in valid_predictions
-        )
+        weights = [max(float(p.get("confidence", 0.5)), 0.0) for p in valid_predictions]
+        total_weight = sum(weights)
         if total_weight == 0:
+            # Equal weighting fallback when all confidences are zero
+            weights = [1.0] * len(valid_predictions)
             total_weight = float(len(valid_predictions))
 
         agg_p_yes = sum(
-            float(p.get("p_yes", 0.5)) * float(p.get("confidence", 0.5))
-            for p in valid_predictions
+            float(p.get("p_yes", 0.5)) * w
+            for p, w in zip(valid_predictions, weights)
         ) / total_weight
         agg_p_no = sum(
-            float(p.get("p_no", 0.5)) * float(p.get("confidence", 0.5))
-            for p in valid_predictions
+            float(p.get("p_no", 0.5)) * w
+            for p, w in zip(valid_predictions, weights)
         ) / total_weight
         agg_confidence = sum(
-            float(p.get("confidence", 0.5)) for p in valid_predictions
-        ) / len(valid_predictions)
+            float(p.get("confidence", 0.5)) * w
+            for p, w in zip(valid_predictions, weights)
+        ) / total_weight
         agg_info = sum(
-            float(p.get("info_utility", 0.0)) for p in valid_predictions
-        ) / len(valid_predictions)
+            float(p.get("info_utility", 0.0)) * w
+            for p, w in zip(valid_predictions, weights)
+        ) / total_weight
 
         self.context.logger.info(
             f"Ensemble aggregated {len(valid_predictions)} predictions: "
