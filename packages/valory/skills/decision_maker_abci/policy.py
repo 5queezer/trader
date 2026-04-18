@@ -233,6 +233,29 @@ class EGreedyPolicy:
             for tool, acc_info in self.accuracy_store.items()
         }
 
+    def select_n_tools(self, n: int, randomness: RandomnessType = None) -> List[str]:
+        """Select top N tools by weighted accuracy, excluding quarantined tools.
+
+        If fewer than N valid tools exist, return all valid ones.
+        Falls back to a single random tool if no valid weighted accuracies exist.
+        """
+        if self.n_tools == 0:
+            return []
+
+        if randomness is not None:
+            random.seed(randomness)
+
+        try:
+            valid = self.valid_weighted_accuracy
+        except ValueError:
+            return []
+
+        if not valid:
+            return [self.random_tool]
+
+        sorted_tools = sorted(valid.items(), key=lambda x: x[1], reverse=True)
+        return [tool for tool, _ in sorted_tools[:n]]
+
     def select_tool(self, randomness: RandomnessType = None) -> Optional[str]:
         """Select a Mech tool and return its index."""
         if self.n_tools == 0:

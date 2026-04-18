@@ -185,13 +185,89 @@ class DecisionReceiveBehaviour(StorageManagerBehaviour):
         self._mech_response = MechInteractionResponse(result=mech_response)
 
     def _get_response(self) -> None:
-        """Get the response data."""
+        """Get the response data, aggregating ensemble predictions if available."""
         mech_responses = self.synchronized_data.mech_responses
-        if mech_responses:
+        if not mech_responses:
+            error = "No Mech responses in synchronized_data."
+            self._mech_response = MechInteractionResponse(error=error)
+            return
+
+        # Single response: use directly (backwards compatible with ensemble_size=1)
+        if len(mech_responses) == 1:
             self._mech_response = mech_responses[0]
             return
-        error = "No Mech responses in synchronized_data."
-        self._mech_response = MechInteractionResponse(error=error)
+
+        # Aggregate multiple ensemble responses via confidence-weighted average
+        valid_predictions = []
+        for resp in mech_responses:
+            if resp.result is None:
+                self.context.logger.warning(
+                    f"Ensemble response error: {resp.error}"
+                )
+                continue
+            try:
+                pred = json.loads(resp.result)
+                if not isinstance(pred, dict):
+                    self.context.logger.warning(
+                        f"Skipping ensemble response with unexpected payload type: {type(pred).__name__}"
+                    )
+                    continue
+                normalized = {
+                    field: float(pred.get(field, default))
+                    for field, default in (
+                        (P_YES_FIELD, 0.5),
+                        (P_NO_FIELD, 0.5),
+                        (CONFIDENCE_FIELD, 0.5),
+                        (INFO_UTILITY_FIELD, 0.0),
+                    )
+                }
+                valid_predictions.append(normalized)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                self.context.logger.warning(
+                    f"Could not parse ensemble response: {exc}"
+                )
+
+        if not valid_predictions:
+            # Fallback to first response if none could be parsed
+            self._mech_response = mech_responses[0]
+            return
+
+        # Predictions are already normalized to floats at parse time
+        weights = [max(p[CONFIDENCE_FIELD], 0.0) for p in valid_predictions]
+        total_weight = sum(weights)
+        if total_weight == 0:
+            # Equal weighting fallback when all confidences are zero
+            weights = [1.0] * len(valid_predictions)
+            total_weight = float(len(valid_predictions))
+
+        agg_p_yes = sum(
+            p[P_YES_FIELD] * w for p, w in zip(valid_predictions, weights)
+        ) / total_weight
+        agg_p_no = sum(
+            p[P_NO_FIELD] * w for p, w in zip(valid_predictions, weights)
+        ) / total_weight
+        agg_confidence = sum(
+            p[CONFIDENCE_FIELD] * w for p, w in zip(valid_predictions, weights)
+        ) / total_weight
+        agg_info = sum(
+            p[INFO_UTILITY_FIELD] * w for p, w in zip(valid_predictions, weights)
+        ) / total_weight
+
+        self.context.logger.info(
+            f"Ensemble aggregated {len(valid_predictions)} predictions: "
+            f"p_yes={agg_p_yes:.4f}, p_no={agg_p_no:.4f}, "
+            f"confidence={agg_confidence:.4f}"
+        )
+
+        aggregated = json.dumps(
+            {
+                "p_yes": agg_p_yes,
+                "p_no": agg_p_no,
+                "confidence": agg_confidence,
+                "info_utility": agg_info,
+            }
+        )
+        self._mech_response = MechInteractionResponse(result=aggregated)
 
     def _get_decision(
         self,
