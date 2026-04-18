@@ -24,6 +24,7 @@ import json
 from copy import deepcopy
 from datetime import datetime
 from math import prod
+from statistics import stdev
 from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 from packages.valory.connections.polymarket_client.request_types import RequestType
@@ -197,13 +198,21 @@ class DecisionReceiveBehaviour(StorageManagerBehaviour):
             self._mech_response = mech_responses[0]
             return
 
+        # Build nonce -> tool map so we can weight by historical accuracy
+        nonce_to_tool = {
+            req.nonce: req.tool for req in self.synchronized_data.mech_requests
+        }
+        weighted_accuracy = (
+            self.synchronized_data.policy.weighted_accuracy
+            if self.synchronized_data.is_policy_set
+            else {}
+        )
+
         # Aggregate multiple ensemble responses via confidence-weighted average
         valid_predictions = []
         for resp in mech_responses:
             if resp.result is None:
-                self.context.logger.warning(
-                    f"Ensemble response error: {resp.error}"
-                )
+                self.context.logger.warning(f"Ensemble response error: {resp.error}")
                 continue
             try:
                 pred = json.loads(resp.result)
@@ -221,37 +230,53 @@ class DecisionReceiveBehaviour(StorageManagerBehaviour):
                         (INFO_UTILITY_FIELD, 0.0),
                     )
                 }
+                normalized["_tool"] = nonce_to_tool.get(resp.nonce)
                 valid_predictions.append(normalized)
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                self.context.logger.warning(
-                    f"Could not parse ensemble response: {exc}"
-                )
+                self.context.logger.warning(f"Could not parse ensemble response: {exc}")
 
         if not valid_predictions:
             # Fallback to first response if none could be parsed
             self._mech_response = mech_responses[0]
             return
 
-        # Predictions are already normalized to floats at parse time
-        weights = [max(p[CONFIDENCE_FIELD], 0.0) for p in valid_predictions]
+        # Blend self-reported confidence with historical tool accuracy from policy.
+        # Fall back to just confidence if the tool has no entry (not yet in store).
+        weights = []
+        for p in valid_predictions:
+            conf = max(p[CONFIDENCE_FIELD], 0.0)
+            accuracy = weighted_accuracy.get(p["_tool"]) if p["_tool"] else None
+            weights.append(conf * accuracy if accuracy is not None else conf)
         total_weight = sum(weights)
         if total_weight == 0:
-            # Equal weighting fallback when all confidences are zero
+            # Equal weighting fallback when all combined weights are zero
             weights = [1.0] * len(valid_predictions)
             total_weight = float(len(valid_predictions))
 
-        agg_p_yes = sum(
-            p[P_YES_FIELD] * w for p, w in zip(valid_predictions, weights)
-        ) / total_weight
-        agg_p_no = sum(
-            p[P_NO_FIELD] * w for p, w in zip(valid_predictions, weights)
-        ) / total_weight
-        agg_confidence = sum(
-            p[CONFIDENCE_FIELD] * w for p, w in zip(valid_predictions, weights)
-        ) / total_weight
-        agg_info = sum(
-            p[INFO_UTILITY_FIELD] * w for p, w in zip(valid_predictions, weights)
-        ) / total_weight
+        agg_p_yes = (
+            sum(p[P_YES_FIELD] * w for p, w in zip(valid_predictions, weights))
+            / total_weight
+        )
+        agg_p_no = (
+            sum(p[P_NO_FIELD] * w for p, w in zip(valid_predictions, weights))
+            / total_weight
+        )
+        agg_confidence = (
+            sum(p[CONFIDENCE_FIELD] * w for p, w in zip(valid_predictions, weights))
+            / total_weight
+        )
+        agg_info = (
+            sum(p[INFO_UTILITY_FIELD] * w for p, w in zip(valid_predictions, weights))
+            / total_weight
+        )
+
+        # Penalize confidence by p_yes disagreement across tools. Antipodal
+        # Bernoulli p_yes (e.g. 0.0 vs 1.0) has stdev 0.5, so the factor of 2
+        # maps full disagreement to zero confidence; clamp to [0, 1].
+        if len(valid_predictions) >= 2:
+            p_yes_spread = stdev(p[P_YES_FIELD] for p in valid_predictions)
+            penalty = max(0.0, 1.0 - 2.0 * p_yes_spread)
+            agg_confidence *= penalty
 
         self.context.logger.info(
             f"Ensemble aggregated {len(valid_predictions)} predictions: "

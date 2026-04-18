@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any, Generator, Tuple
 from unittest.mock import MagicMock, PropertyMock, patch
 
+import pytest
+
 from packages.valory.skills.decision_maker_abci.behaviours.decision_receive import (
     DecisionReceiveBehaviour,
 )
@@ -373,6 +375,137 @@ class TestGetResponse:
 
         assert behaviour._mech_response is not None
         assert behaviour._mech_response.error is not None
+
+    @staticmethod
+    def _make_ensemble_sd(
+        responses: list,
+        requests: list,
+        weighted_accuracy: dict,
+        is_policy_set: bool = True,
+    ) -> MagicMock:
+        """Build a synchronized_data mock for ensemble aggregation tests."""
+        policy = MagicMock(weighted_accuracy=weighted_accuracy)
+        return MagicMock(
+            mech_responses=responses,
+            mech_requests=requests,
+            policy=policy,
+            is_policy_set=is_policy_set,
+        )
+
+    @staticmethod
+    def _make_resp(
+        nonce: str, p_yes: float, confidence: float
+    ) -> MechInteractionResponse:
+        """Build a MechInteractionResponse with a prediction payload."""
+        return MechInteractionResponse(
+            nonce=nonce,
+            result=json.dumps(
+                {
+                    "p_yes": p_yes,
+                    "p_no": 1.0 - p_yes,
+                    "confidence": confidence,
+                    "info_utility": 0.0,
+                }
+            ),
+        )
+
+    def test_ensemble_identical_p_yes_no_penalty(self) -> None:
+        """Three tools agreeing on p_yes should keep full aggregated confidence."""
+        behaviour = _make_behaviour()
+        responses = [
+            self._make_resp("n1", 0.7, 0.8),
+            self._make_resp("n2", 0.7, 0.8),
+            self._make_resp("n3", 0.7, 0.8),
+        ]
+        requests = [
+            MagicMock(nonce="n1", tool="t1"),
+            MagicMock(nonce="n2", tool="t2"),
+            MagicMock(nonce="n3", tool="t3"),
+        ]
+        with patch.object(
+            type(behaviour), "synchronized_data", new_callable=PropertyMock
+        ) as mock_sd:
+            mock_sd.return_value = self._make_ensemble_sd(responses, requests, {})
+            behaviour._get_response()
+
+        assert behaviour._mech_response is not None
+        agg = json.loads(behaviour._mech_response.result)
+        assert agg["p_yes"] == pytest.approx(0.7, rel=1e-6)
+        # Identical predictions -> stdev=0 -> penalty factor 1.0
+        assert agg["confidence"] == pytest.approx(0.8, rel=1e-6)
+
+    def test_ensemble_spread_p_yes_scales_confidence(self) -> None:
+        """p_yes spread of [0.2, 0.5, 0.8] should scale confidence below self-reported."""
+        behaviour = _make_behaviour()
+        responses = [
+            self._make_resp("n1", 0.2, 0.9),
+            self._make_resp("n2", 0.5, 0.9),
+            self._make_resp("n3", 0.8, 0.9),
+        ]
+        requests = [
+            MagicMock(nonce="n1", tool="t1"),
+            MagicMock(nonce="n2", tool="t2"),
+            MagicMock(nonce="n3", tool="t3"),
+        ]
+        with patch.object(
+            type(behaviour), "synchronized_data", new_callable=PropertyMock
+        ) as mock_sd:
+            mock_sd.return_value = self._make_ensemble_sd(responses, requests, {})
+            behaviour._get_response()
+
+        assert behaviour._mech_response is not None
+        agg = json.loads(behaviour._mech_response.result)
+        # Penalty = 1 - 2 * stdev([0.2, 0.5, 0.8]) = 1 - 2 * 0.3 = 0.4
+        # Aggregated confidence before penalty is 0.9 (all equal)
+        assert agg["confidence"] == pytest.approx(0.9 * 0.4, rel=1e-6)
+
+    def test_ensemble_single_valid_no_penalty_no_crash(self) -> None:
+        """A single valid prediction (others invalid) should not crash or penalize."""
+        behaviour = _make_behaviour()
+        responses = [
+            self._make_resp("n1", 0.7, 0.9),
+            MechInteractionResponse(nonce="n2", result=None, error="boom"),
+        ]
+        requests = [
+            MagicMock(nonce="n1", tool="t1"),
+            MagicMock(nonce="n2", tool="t2"),
+        ]
+        with patch.object(
+            type(behaviour), "synchronized_data", new_callable=PropertyMock
+        ) as mock_sd:
+            mock_sd.return_value = self._make_ensemble_sd(responses, requests, {})
+            behaviour._get_response()
+
+        assert behaviour._mech_response is not None
+        agg = json.loads(behaviour._mech_response.result)
+        assert agg["p_yes"] == pytest.approx(0.7, rel=1e-6)
+        assert agg["confidence"] == pytest.approx(0.9, rel=1e-6)
+
+    def test_ensemble_policy_accuracy_dominates_weight(self) -> None:
+        """Tool with higher policy accuracy should pull aggregate toward its p_yes."""
+        behaviour = _make_behaviour()
+        # Both tools self-report identical confidence, same spread, but t_high has 10x accuracy.
+        responses = [
+            self._make_resp("n1", 0.1, 0.5),
+            self._make_resp("n2", 0.9, 0.5),
+        ]
+        requests = [
+            MagicMock(nonce="n1", tool="t_low"),
+            MagicMock(nonce="n2", tool="t_high"),
+        ]
+        with patch.object(
+            type(behaviour), "synchronized_data", new_callable=PropertyMock
+        ) as mock_sd:
+            mock_sd.return_value = self._make_ensemble_sd(
+                responses, requests, {"t_low": 0.1, "t_high": 1.0}
+            )
+            behaviour._get_response()
+
+        assert behaviour._mech_response is not None
+        agg = json.loads(behaviour._mech_response.result)
+        # Weights: 0.5*0.1=0.05 vs 0.5*1.0=0.5 -> p_yes is strongly pulled toward 0.9
+        expected = (0.1 * 0.05 + 0.9 * 0.5) / (0.05 + 0.5)
+        assert agg["p_yes"] == pytest.approx(expected, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
