@@ -49,6 +49,10 @@ class TradingStrategyUI(enum.Enum):
     BALANCED = "balanced"
 
 
+ENSEMBLE_SIZE_MIN = 1
+ENSEMBLE_SIZE_MAX = 7
+
+
 @dataclass
 class ChatuiConfig:
     """Parameters for the chat UI."""
@@ -58,6 +62,7 @@ class ChatuiConfig:
     allowed_tools: Optional[List[str]] = None
     fixed_bet_size: Optional[int] = None
     max_bet_size: Optional[int] = None
+    ensemble_size: Optional[int] = None
 
 
 class SharedState(BaseSharedState):
@@ -144,6 +149,18 @@ class SharedState(BaseSharedState):
             self._chatui_config.fixed_bet_size = self.context.params.strategies_kwargs[
                 "absolute_min_bet_size"
             ]
+
+        # Seed ensemble_size from the skill param (service.yaml ENSEMBLE_SIZE env)
+        # on first run so the UI shows the real default instead of null.
+        ensemble_size_store = self._chatui_config.ensemble_size
+        if ensemble_size_store is None or not isinstance(ensemble_size_store, int):
+            skill_ensemble_size = getattr(self.context.params, "ensemble_size", None)
+            if isinstance(skill_ensemble_size, int) and skill_ensemble_size >= ENSEMBLE_SIZE_MIN:
+                self._chatui_config.ensemble_size = min(
+                    skill_ensemble_size, ENSEMBLE_SIZE_MAX
+                )
+            else:
+                self._chatui_config.ensemble_size = ENSEMBLE_SIZE_MIN
 
         trading_strategy_store = self._chatui_config.trading_strategy
         initial_trading_strategy_store = self._chatui_config.initial_trading_strategy

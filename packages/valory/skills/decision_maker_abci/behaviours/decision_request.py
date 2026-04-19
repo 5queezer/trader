@@ -70,8 +70,16 @@ class DecisionRequestBehaviour(DecisionMakerBaseBehaviour):
         primary_tool = self.synchronized_data.mech_tool
         request_context = sampled_bet.to_request_context()
 
-        # Determine ensemble tools
-        ensemble_size = self.params.ensemble_size
+        # Determine ensemble tools. Chatui override wins over skill-YAML default
+        # so users can tune it at runtime via the "Change Agent Behavior" prompt.
+        chatui_ensemble_size = getattr(
+            self.shared_state.chatui_config, "ensemble_size", None
+        )
+        ensemble_size = (
+            chatui_ensemble_size
+            if isinstance(chatui_ensemble_size, int) and chatui_ensemble_size >= 1
+            else self.params.ensemble_size
+        )
         if ensemble_size > 1 and self.synchronized_data.is_policy_set:
             policy = self.synchronized_data.policy
             top_tools = policy.select_n_tools(ensemble_size)
