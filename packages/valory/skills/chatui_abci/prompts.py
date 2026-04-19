@@ -57,8 +57,14 @@ Configuration details:
     -- Cannot be less than {absolute_min_bet_size} {units}.
     -- Cannot exceed {absolute_max_bet_size} {units}.
     -- Can be deselected to fall back to the default value if the user says to remove it.
+- Ensemble size: "{current_ensemble_size}"
+    -- Integer controlling how many prediction tools the agent queries per trade.
+    -- 1 disables ensemble behavior (one tool, cheapest). Higher values query multiple tools in parallel and aggregate their predictions via confidence-weighted averaging, penalizing disagreement.
+    -- Must be an integer in the range [{ensemble_size_min}, {ensemble_size_max}]. Typical useful values are 3–5.
+    -- Each extra tool adds roughly one Mech request fee per trade, so higher values cost more per trade but improve accuracy.
+    -- Can be deselected to fall back to the default value if the user says to remove it.
 
-Note: The fixed_bet_size parameter only applies when using the Balanced strategy, and max_bet_size only applies when using the Risky strategy. Setting one does not affect the other strategy.
+Note: The fixed_bet_size parameter only applies when using the Balanced strategy, and max_bet_size only applies when using the Risky strategy. Setting one does not affect the other strategy. The ensemble_size applies to both strategies because it controls prediction accuracy, not bet sizing.
 
 Carefully read the user's prompt below and decide what configuration changes, if any, should be made. If only one field should be updated, set the others to null. A field can not be deselected and set at the same time.
 
@@ -85,6 +91,7 @@ class FieldsThatCanBeRemoved(enum.Enum):
     ALLOWED_TOOLS = "allowed_tools"
     FIXED_BET_SIZE = "fixed_bet_size"
     MAX_BET_SIZE = "max_bet_size"
+    ENSEMBLE_SIZE = "ensemble_size"
 
 
 class UpdatedAgentConfig(BaseModel):
@@ -94,6 +101,7 @@ class UpdatedAgentConfig(BaseModel):
     allowed_tools: typing.Optional[List[str]]
     fixed_bet_size: typing.Optional[float]
     max_bet_size: typing.Optional[float]
+    ensemble_size: typing.Optional[int]
     removed_config_fields: typing.List[FieldsThatCanBeRemoved]
     behavior: typing.Optional[str]
 

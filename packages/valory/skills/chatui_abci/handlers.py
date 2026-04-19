@@ -61,7 +61,12 @@ from packages.valory.skills.agent_performance_summary_abci.handlers import (
 )
 from packages.valory.skills.agent_performance_summary_abci.handlers import HttpMethod
 from packages.valory.skills.chatui_abci.dialogues import HttpDialogue
-from packages.valory.skills.chatui_abci.models import SharedState, TradingStrategyUI
+from packages.valory.skills.chatui_abci.models import (
+    ENSEMBLE_SIZE_MAX,
+    ENSEMBLE_SIZE_MIN,
+    SharedState,
+    TradingStrategyUI,
+)
 from packages.valory.skills.chatui_abci.prompts import (
     CHATUI_PROMPT,
     FieldsThatCanBeRemoved,
@@ -233,6 +238,7 @@ class HttpHandler(BaseHttpHandler):
         )
         current_fixed_bet_size = self.shared_state.chatui_config.fixed_bet_size
         current_max_bet_size = self.shared_state.chatui_config.max_bet_size
+        current_ensemble_size = self.shared_state.chatui_config.ensemble_size
         absolute_max_bet_size = self.context.params.strategies_kwargs[
             "absolute_max_bet_size"
         ]
@@ -259,6 +265,9 @@ class HttpHandler(BaseHttpHandler):
             ),
             absolute_min_bet_size=absolute_min_bet_size / (10**decimals),
             absolute_max_bet_size=absolute_max_bet_size / (10**decimals),
+            current_ensemble_size=current_ensemble_size,
+            ensemble_size_min=ENSEMBLE_SIZE_MIN,
+            ensemble_size_max=ENSEMBLE_SIZE_MAX,
             units=units,
             decimals=decimals,
         )
@@ -536,6 +545,37 @@ class HttpHandler(BaseHttpHandler):
                 issue_message = f"Max bet size {updated_max_bet_size} is out of bounds. It must be between {absolute_min_bet_size / 10**decimals} and {absolute_max_bet_size / 10**decimals}."
                 self.context.logger.warning(issue_message)
                 issues.append(issue_message)
+
+        updated_ensemble_size = updated_agent_config.get("ensemble_size", None)
+        ensemble_size_is_removed: bool = (
+            FieldsThatCanBeRemoved.ENSEMBLE_SIZE.value
+            in updated_agent_config.get(REMOVED_CONFIG_FIELDS_FIELD, [])
+        )
+        if ensemble_size_is_removed:
+            updated_params.update({"ensemble_size": None})
+            self.shared_state.chatui_config.ensemble_size = None
+            self._store_chatui_param_to_json("ensemble_size", None)
+        elif updated_ensemble_size is not None:
+            try:
+                coerced = int(updated_ensemble_size)
+            except (TypeError, ValueError):
+                issue_message = (
+                    f"Ensemble size {updated_ensemble_size!r} is not an integer."
+                )
+                self.context.logger.warning(issue_message)
+                issues.append(issue_message)
+            else:
+                if ENSEMBLE_SIZE_MIN <= coerced <= ENSEMBLE_SIZE_MAX:
+                    updated_params.update({"ensemble_size": coerced})
+                    self.shared_state.chatui_config.ensemble_size = coerced
+                    self._store_chatui_param_to_json("ensemble_size", coerced)
+                else:
+                    issue_message = (
+                        f"Ensemble size {coerced} is out of bounds. Must be an "
+                        f"integer between {ENSEMBLE_SIZE_MIN} and {ENSEMBLE_SIZE_MAX}."
+                    )
+                    self.context.logger.warning(issue_message)
+                    issues.append(issue_message)
 
         behavior: Optional[str] = updated_agent_config.get("behavior", None)
         if behavior:
