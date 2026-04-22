@@ -268,6 +268,7 @@ models:
       mech_invalid_response: Invalid Response
       mech_consecutive_failures_threshold: 2
       tool_quarantine_duration: 18000
+      ensemble_size: 1
       default_chain_id: gnosis
       mech_interact_round_timeout_seconds: 5400
       use_multi_bets_mode: true
